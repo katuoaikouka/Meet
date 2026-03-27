@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Meet</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --primary: #3b82f6;
+            --danger: #ef4444;
+            --text: #f8fafc;
+        }
+
+        body {
+            margin: 0; background: var(--bg-color); color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif; height: 100vh; overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+
+        /* --- アニメーション付アラート --- */
+        #alert-container {
+            position: fixed; top: 20px; right: 20px; z-index: 1000;
+        }
+        .alert {
+            background: var(--danger); color: white; padding: 16px 24px;
+            border-radius: 12px; margin-bottom: 10px; display: flex; align-items: center;
+            gap: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3);
+            animation: slideIn 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        /* --- 準備画面 (Glassmorphism) --- */
+        #setup {
+            position: fixed; inset: 0; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            z-index: 500; display: flex; justify-content: center; align-items: center;
+        }
+        .setup-card {
+            background: rgba(255,255,255,0.05); backdrop-filter: blur(20px);
+            padding: 40px; border-radius: 24px; border: 1px solid rgba(255,255,255,0.1);
+            text-align: center; width: 100%; max-width: 400px;
+            animation: fadeIn 0.8s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        input {
+            width: 80%; padding: 14px; border-radius: 12px; border: 2px solid #334155;
+            background: #0f172a; color: white; margin-bottom: 20px; outline: none; transition: 0.3s;
+        }
+        input:focus { border-color: var(--primary); }
+
+        button#joinBtn {
+            width: 90%; padding: 14px; border-radius: 12px; border: none;
+            background: var(--primary); color: white; font-weight: 700; cursor: pointer; transition: 0.2s;
+        }
+        button#joinBtn:hover { transform: scale(1.02); filter: brightness(1.1); }
+
+        /* --- ビデオグリッド --- */
+        #video-grid {
+            flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px; padding: 20px; transition: 0.5s;
+        }
+        .video-wrapper {
+            position: relative; border-radius: 20px; overflow: hidden;
+            background: var(--card-bg); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            animation: videoSpawn 0.5s ease-out;
+        }
+        @keyframes videoSpawn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .name-tag { position: absolute; bottom: 15px; left: 15px; background: rgba(0,0,0,0.5); padding: 4px 12px; border-radius: 6px; font-size: 12px; }
+
+        /* --- コントロールバー --- */
+        .controls {
+            height: 100px; display: flex; justify-content: center; align-items: center; gap: 24px;
+        }
+        .btn {
+            width: 56px; height: 56px; border-radius: 18px; background: var(--card-bg);
+            display: flex; justify-content: center; align-items: center; cursor: pointer;
+            transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); border: 1px solid rgba(255,255,255,0.05);
+        }
+        .btn:hover { background: #334155; transform: translateY(-5px); }
+        .btn.off { background: var(--danger); color: white; }
+        .btn.hangup { background: var(--danger); width: 80px; border-radius: 30px; }
+    </style>
+</head>
+<body>
+
+    <div id="alert-container"></div>
+
+    <div id="setup">
+        <div class="setup-card">
+            <h1 style="margin-bottom: 8px;">Premium Meet</h1>
+            <p style="color: #94a3b8; margin-bottom: 30px;">ルームIDを入力して開始</p>
+            <input type="text" id="roomInput" placeholder="Room ID..." autocomplete="off">
+            <button id="joinBtn" onclick="startApp()">参加する</button>
+        </div>
+    </div>
+
+    <div id="video-grid">
+        <div class="video-wrapper" id="localWrapper">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div class="name-tag">あなた</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="btn" id="micBtn" onclick="toggleMic()">
+            <span class="material-symbols-outlined" id="micIcon">mic</span>
+        </div>
+        <div class="btn" id="camBtn" onclick="toggleCam()">
+            <span class="material-symbols-outlined" id="camIcon">videocam</span>
+        </div>
+        <div class="btn hangup" onclick="location.reload()">
+            <span class="material-symbols-outlined">call_end</span>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const grid = document.getElementById('video-grid');
+        let localStream, peerConnections = {}, roomID;
+        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+        // --- エラー表示機能 ---
+        function showError(msg) {
+            const container = document.getElementById('alert-container');
+            const el = document.createElement('div');
+            el.className = 'alert';
+            el.innerHTML = `<span class="material-symbols-outlined">error</span> ${msg}`;
+            container.appendChild(el);
+            setTimeout(() => el.remove(), 4000);
+        }
+
+        async function startApp() {
+            roomID = document.getElementById('roomInput').value;
+            if (!roomID) return showError("ルームIDを入力してください");
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = localStream;
+                document.getElementById('setup').style.display = 'none';
+                socket.emit('join', roomID);
+            } catch (e) {
+                showError("カメラまたはマイクの許可が必要です");
+            }
+        }
+
+        socket.on('error-msg', (msg) => {
+            showError(msg);
+            document.getElementById('setup').style.display = 'flex';
+        });
+
+        socket.on('user-joined', async (userId) => {
+            const pc = createPeerConnection(userId);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket.emit('signal', { to: userId, signal: { sdp: pc.localDescription } });
+        });
+
+        socket.on('signal', async (data) => {
+            let pc = peerConnections[data.from] || createPeerConnection(data.from);
+            if (data.signal.sdp) {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.signal.sdp));
+                if (data.signal.sdp.type === 'offer') {
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    socket.emit('signal', { to: data.from, signal: { sdp: pc.localDescription } });
+                }
+            } else if (data.signal.candidate) {
+                await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+            }
+        });
+
+        function createPeerConnection(userId) {
+            const pc = new RTCPeerConnection(config);
+            peerConnections[userId] = pc;
+            localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+            pc.onicecandidate = e => e.candidate && socket.emit('signal', { to: userId, signal: { candidate: e.candidate } });
+            
+            pc.ontrack = e => {
+                if (document.getElementById(`wrap-${userId}`)) return;
+                const wrap = document.createElement('div');
+                wrap.className = 'video-wrapper';
+                wrap.id = `wrap-${userId}`;
+                const v = document.createElement('video');
+                v.autoplay = true; v.playsinline = true; v.srcObject = e.streams;
+                const tag = document.createElement('div');
+                tag.className = 'name-tag'; tag.innerText = `Guest (${userId.slice(0,4)})`;
+                wrap.append(v, tag);
+                grid.appendChild(wrap);
+            };
+            return pc;
+        }
+
+        socket.on('user-left', (id) => {
+            const el = document.getElementById(`wrap-${id}`);
+            if (el) el.remove();
+            if (peerConnections[id]) { peerConnections[id].close(); delete peerConnections[id]; }
+        });
+
+        function toggleMic() {
+            const track = localStream.getAudioTracks();
+            track.enabled = !track.enabled;
+            document.getElementById('micIcon').innerText = track.enabled ? 'mic' : 'mic_off';
+            document.getElementById('micBtn').classList.toggle('off', !track.enabled);
+        }
+
+        function toggleCam() {
+            const track = localStream.getVideoTracks();
+            track.enabled = !track.enabled;
+            document.getElementById('camIcon').innerText = track.enabled ? 'videocam' : 'videocam_off';
+            document.getElementById('camBtn').classList.toggle('off', !track.enabled);
+        }
+    </script>
+</body>
+</html>
